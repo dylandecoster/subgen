@@ -27,7 +27,7 @@ WORKDIR /subgen
 
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt,sharing=locked \
-    apt-get update && apt-get install -y --no-install-recommends \
+    apt-get update && apt-get install -y --no-install-recommends --fix-missing \
         ffmpeg curl gosu tzdata \
     && rm -rf /var/lib/apt/lists/*
 
