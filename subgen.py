@@ -56,6 +56,7 @@ import subprocess
 import sys
 import threading
 import time
+import importlib.metadata
 import xml.etree.ElementTree as ET
 from contextlib import asynccontextmanager
 from datetime import datetime
@@ -518,7 +519,7 @@ def webui():
 
 @app.get("/status")
 def status():
-    return {"version": f"Subgen {subgen_version}, faster-whisper {whisperx.__version__} ({docker_status})"}
+    return {"version": f"Subgen {subgen_version}, whisperx {importlib.metadata.version("whisperx")} ({docker_status})"}
 
 @app.post("/batch")
 def batch(
