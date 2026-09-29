@@ -63,15 +63,13 @@ from threading import Event, Lock, Timer
 from typing import Union
 
 import av
-import faster_whisper
+import whisperx
 import ffmpeg
 import numpy as np
 import requests
-import stable_whisper
 import torch
 from fastapi import Body, FastAPI, File, Form, Header, Query, Request, UploadFile
 from fastapi.responses import StreamingResponse
-from stable_whisper import Segment
 from watchdog.events import FileSystemEventHandler
 from watchdog.observers.polling import PollingObserver as Observer
 
@@ -107,12 +105,6 @@ def get_env_with_fallback(new_name: str, old_name: str, default_value=None, conv
     
     return value
     
-# Server Integration - with backwards compatibility
-plextoken = get_env_with_fallback('PLEX_TOKEN', 'PLEXTOKEN', 'token here')
-plexserver = get_env_with_fallback('PLEX_SERVER', 'PLEXSERVER', 'http://192.168.1.111:32400')
-jellyfintoken = get_env_with_fallback('JELLYFIN_TOKEN', 'JELLYFINTOKEN', 'token here')
-jellyfinserver = get_env_with_fallback('JELLYFIN_SERVER', 'JELLYFINSERVER', 'http://192.168.1.111:8096')
-
 # Whisper Configuration
 whisper_model = os.getenv('WHISPER_MODEL', 'medium')
 whisper_threads = int(os.getenv('WHISPER_THREADS', 4))
@@ -155,9 +147,6 @@ skip_if_external_sub_exists = get_env_with_fallback('SKIP_IF_EXTERNAL_SUBTITLES_
 skip_if_target_subtitle_exists = get_env_with_fallback('SKIP_IF_TARGET_SUBTITLES_EXIST', 'SKIP_IF_TO_TRANSCRIBE_SUB_ALREADY_EXIST', True, convert_to_bool)
 skip_if_internal_sub_language = LanguageCode.from_string(get_env_with_fallback('SKIP_IF_INTERNAL_SUBTITLES_LANGUAGE', 'SKIPIFINTERNALSUBLANG', ''))
 ignore_forced_subtitles = convert_to_bool(os.getenv('IGNORE_FORCED_SUBTITLES', True))
-plex_queue_next_episode = convert_to_bool(os.getenv('PLEX_QUEUE_NEXT_EPISODE', False))
-plex_queue_season = convert_to_bool(os.getenv('PLEX_QUEUE_SEASON', False))
-plex_queue_series = convert_to_bool(os.getenv('PLEX_QUEUE_SERIES', False))
 # Language and Skip Configuration - with backwards compatibility
 skip_subtitle_languages = ([LanguageCode.from_string(code) for code in get_env_with_fallback('SKIP_SUBTITLE_LANGUAGES', 'SKIP_LANG_CODES', '').split("|")]
         if get_env_with_fallback('SKIP_SUBTITLE_LANGUAGES', 'SKIP_LANG_CODES')
@@ -378,22 +367,6 @@ def transcription_worker():
                 asr_task_worker(task)
             else: # transcribe
                 gen_subtitles(task['path'], task['transcribe_or_translate'], task['force_language'], audio_tracks=task.get('audio_tracks'))
-                
-                # --- METADATA REFRESH LOGIC ---
-                if 'plex_item_id' in task:
-                    try:
-                        logging.info(f"Refreshing Plex Metadata for item {task['plex_item_id']}")
-                        refresh_plex_metadata(task['plex_item_id'], task['plex_server'], task['plex_token'])
-                    except Exception as e:
-                        logging.error(f"Failed to refresh Plex metadata: {e}")
-                
-                if 'jellyfin_item_id' in task:
-                    try:
-                        logging.info(f"Refreshing Jellyfin Metadata for item {task['jellyfin_item_id']}")
-                        refresh_jellyfin_metadata(task['jellyfin_item_id'], task['jellyfin_server'], task['jellyfin_token'])
-                    except Exception as e:
-                        logging.error(f"Failed to refresh Jellyfin metadata: {e}")
-                # ------------------------------
             
             # Status for FINISH log
             elapsed = time.time() - start_time
@@ -534,13 +507,8 @@ def appendLine(result):
         # Append the new segment to the result's segments
         result.segments.append(newSegment)
 
-@app.get("/plex")
-@app.get("/webhook")
-@app.get("/jellyfin")
 @app.get("/asr")
-@app.get("/emby")
 @app.get("/detect-language")
-@app.get("/tautulli")
 def handle_get_request(request: Request):
     return {"You accessed this request incorrectly via a GET request. See https://github.com/McCloudS/subgen for proper configuration"}
 
@@ -550,159 +518,8 @@ def webui():
 
 @app.get("/status")
 def status():
-    return {"version": f"Subgen {subgen_version}, stable-ts {stable_whisper.__version__}, faster-whisper {faster_whisper.__version__} ({docker_status})"}
+    return {"version": f"Subgen {subgen_version}, faster-whisper {whisperx.__version__} ({docker_status})"}
 
-@app.post("/tautulli")
-def receive_tautulli_webhook(
-        source: Union[str, None] = Header(None),
-        event: str = Body(None),
-        file: str = Body(None),
-):
-    if source == "Tautulli":
-        logging.debug(f"Tautulli event detected is: {event}")
-        if((event == "added" and procaddedmedia) or (event == "played" and procmediaonplay)):
-            fullpath = file
-            logging.debug(f"Full file path: {fullpath}")
-
-            gen_subtitles_queue(path_mapping(fullpath), transcribe_or_translate)
-    else:
-        return {
-            "message": "This doesn't appear to be a properly configured Tautulli webhook, please review the instructions again!"}
-
-    return ""
-
-@app.post("/plex")
-def receive_plex_webhook(
-        user_agent: Union[str] = Header(None),
-        payload: Union[str] = Form(),
-):
-    try:
-        plex_json = json.loads(payload)
-        if "PlexMediaServer" not in user_agent:
-            return {"message": "This doesn't appear to be a properly configured Plex webhook, please review the instructions again"}
-
-        event = plex_json["event"]
-        logging.debug(f"Plex event detected is: {event}")
-
-        if (event == "library.new" and procaddedmedia) or (event == "media.play" and procmediaonplay):
-            rating_key = plex_json['Metadata']['ratingKey']
-            fullpath = get_plex_file_name(rating_key, plexserver, plextoken)
-            logging.debug(f"Full file path: {fullpath}")
-
-            # Queue the current item with its specific ID for refreshing
-            gen_subtitles_queue(
-                path_mapping(fullpath), 
-                transcribe_or_translate, 
-                plex_item_id=rating_key, 
-                plex_server=plexserver, 
-                plex_token=plextoken
-            )
-            
-            # Note: refresh_plex_metadata is removed here; it is now handled by the worker thread.
-
-            if plex_queue_next_episode:
-                next_key = get_next_plex_episode(plex_json['Metadata']['ratingKey'], stay_in_season=False)
-                if next_key:
-                    next_file = get_plex_file_name(next_key, plexserver, plextoken)
-                    gen_subtitles_queue(
-                        path_mapping(next_file), 
-                        transcribe_or_translate,
-                        plex_item_id=next_key, # Pass the NEXT ID so it refreshes when done
-                        plex_server=plexserver,
-                        plex_token=plextoken
-                    )
-
-            if plex_queue_series or plex_queue_season:
-                current_rating_key = plex_json['Metadata']['ratingKey']
-                stay_in_season = plex_queue_season # Determine if we're staying in the season or not
-
-                while current_rating_key is not None:
-                    try:
-                        # Queue the current episode
-                        file_path = path_mapping(get_plex_file_name(current_rating_key, plexserver, plextoken))
-                        
-                        gen_subtitles_queue(
-                            file_path, 
-                            transcribe_or_translate,
-                            plex_item_id=current_rating_key, # Pass the specific loop ID for refreshing
-                            plex_server=plexserver,
-                            plex_token=plextoken
-                        )
-                        
-                        logging.debug(f"Queued episode with ratingKey {current_rating_key}")
-
-                        # Get the next episode
-                        next_episode_rating_key = get_next_plex_episode(current_rating_key, stay_in_season=stay_in_season)
-                        if next_episode_rating_key is None:
-                            break # Exit the loop if no next episode
-                        current_rating_key = next_episode_rating_key
-
-                    except Exception as e:
-                        logging.error(f"Error processing episode with ratingKey {current_rating_key} or reached end of series: {e}")
-                        break # Stop processing on error
-
-                logging.info("All episodes in the series (or season) have been queued.")
-
-    except Exception as e:
-        logging.error(f"Failed to process Plex webhook: {e}")
-
-    return ""
- 
-@app.post("/jellyfin")
-def receive_jellyfin_webhook(
-        user_agent: str = Header(None),
-        NotificationType: str = Body(None),
-        file: str = Body(None),
-        ItemId: str = Body(None),
-):
-    if "Jellyfin-Server" in user_agent:
-        logging.debug(f"Jellyfin event detected is: {NotificationType}")
-        logging.debug(f"itemid is: {ItemId}")
-
-        if (NotificationType == "ItemAdded" and procaddedmedia) or (NotificationType == "PlaybackStart" and procmediaonplay):
-            fullpath = get_jellyfin_file_name(ItemId, jellyfinserver, jellyfintoken)
-            logging.debug(f"Full file path: {fullpath}")
-
-            # Queue item with Jellyfin metadata ID for delayed refresh
-            gen_subtitles_queue(
-                path_mapping(fullpath), 
-                transcribe_or_translate,
-                jellyfin_item_id=ItemId,
-                jellyfin_server=jellyfinserver,
-                jellyfin_token=jellyfintoken
-            )
-            
-            # Note: refresh_jellyfin_metadata removed here; handled by worker.
-    else:
-        return {
-            "message": "This doesn't appear to be a properly configured Jellyfin webhook, please review the instructions again!"}
-
-    return ""
-
-@app.post("/emby")
-def receive_emby_webhook(
-        user_agent: Union[str, None] = Header(None),
-        data: Union[str, None] = Form(None),
-):
-    if not data:
-        return ""
-
-    data_dict = json.loads(data)
-    event = data_dict['Event']
-    logging.debug("Emby event detected is: " + event)
-
-    # Check if it's a notification test event
-    if event == "system.notificationtest":
-        logging.info("Emby test message received!")
-        return {"message": "Notification test received successfully!"}
-
-    if (event == "library.new" and procaddedmedia) or (event == "playback.start" and procmediaonplay):
-        fullpath = data_dict['Item']['Path']
-        logging.debug(f"Full file path: {fullpath}")
-        gen_subtitles_queue(path_mapping(fullpath), transcribe_or_translate)
-
-    return ""
-    
 @app.post("/batch")
 def batch(
         directory: str = Query(...),
@@ -1450,7 +1267,7 @@ def start_model():
     with model_load_lock:
         if model is None:
             logging.debug("Model was purged, need to re-create")
-            model = stable_whisper.load_faster_whisper(whisper_model, download_root=model_location, device=transcribe_device, cpu_threads=whisper_threads, num_workers=concurrent_transcriptions, compute_type=compute_type)
+            model = whisperx.load_model(whisper_model, download_root=model_location, device=transcribe_device, cpu_threads=whisper_threads, num_workers=concurrent_transcriptions, compute_type=compute_type)
 
 def schedule_model_cleanup():
     """Schedule model cleanup with a delay to allow concurrent requests.
@@ -2187,235 +2004,6 @@ def has_external_subtitle_in_language(video_file: str, target_language: Language
 def is_valid_subtitle_language(subtitle_parts: list[str], target_language: LanguageCode) -> bool:
     """Checks if any part of the subtitle name matches the target language."""
     return any(LanguageCode.from_string(part) == target_language for part in subtitle_parts)
-
-def get_next_plex_episode(current_episode_rating_key, stay_in_season: bool = False):
-    """
-    Get the next episode's ratingKey based on the current episode in Plex.
-    Args:
-        current_episode_rating_key (str): The ratingKey of the current episode.
-        stay_in_season (bool): If True, only find the next episode within the current season.
-                              If False, find the next episode in the series.
-    Returns:
-        str: The ratingKey of the next episode, or None if it's the last episode.
-    """
-    try:
-        # Get current episode's metadata to fetch parent (season) ratingKey
-        url = f"{plexserver}/library/metadata/{current_episode_rating_key}"
-        headers = {"X-Plex-Token": plextoken}
-        response = requests.get(url, headers=headers)
-        response.raise_for_status()
-
-        # Parse XML response
-        root = ET.fromstring(response.content)
-
-        # Find the show ID
-        grandparent_rating_key = root.find(".//Video").get("grandparentRatingKey")
-        if grandparent_rating_key is None:
-            logging.debug(f"Show not found for episode {current_episode_rating_key}")
-            return None
-
-        # Find the parent season ratingKey
-        parent_rating_key = root.find(".//Video").get("parentRatingKey")
-        if parent_rating_key is None:
-            logging.debug(f"Parent season not found for episode {current_episode_rating_key}")
-            return None
-
-        # Get the list of seasons
-        url = f"{plexserver}/library/metadata/{grandparent_rating_key}/children"
-        response = requests.get(url, headers=headers)
-        response.raise_for_status()
-        seasons = ET.fromstring(response.content).findall(".//Directory[@type='season']")
-
-        # Get the list of episodes in the parent season
-        url = f"{plexserver}/library/metadata/{parent_rating_key}/children"
-        response = requests.get(url, headers=headers)
-        response.raise_for_status()
-        #print(response.content)
-
-        # Parse XML response for the list of episodes
-        episodes = ET.fromstring(response.content).findall(".//Video")
-        episodes_in_season = len(episodes) #episodes.get('size') # changed from episodes.get("size") because size is not available
-
-        # Find the current episode index and get the next one
-        current_episode_number = None
-        current_season_number = None
-        next_season_number = None
-        for episode in episodes:
-            if episode.get("ratingKey") == current_episode_rating_key:
-                ep_index = episode.get("index")
-                if ep_index is None:
-                    logging.warning(f"Episode ratingKey {current_episode_rating_key} has no index attribute")
-                    return None
-                current_episode_number = int(ep_index)
-                current_season_number = episode.get("parentIndex")
-                break
-            #if rating_key_element is None:
-            #    logging.warning(f"ratingKey not found for episode at index")
-            #    continue
-
-        # Logic to find the next episode
-        if stay_in_season:
-          if current_episode_number == episodes_in_season:
-              return None # End of season
-          for episode in episodes:
-            ep_index = episode.get("index")
-            if ep_index is not None and int(ep_index) == int(current_episode_number)+1:
-                return episode.get("ratingKey")
-        else: # Not staying in season, find the next overall episode
-          # Find next season if it exists
-          for season in seasons:
-              s_index = season.get("index")
-              if s_index is not None and int(s_index) == int(current_season_number)+1:
-                  #print(f"next season is: {episode.get('ratingKey')}")
-                  #print(season.get("title"))
-                  next_season_number = season.get("ratingKey")
-                  break
-
-          if current_episode_number == episodes_in_season: # changed to episodes_in_season from int(episodes_in_season)
-              if next_season_number is not None:
-                logging.debug("At end of season, try to find next season and first episode.")
-                url = f"{plexserver}/library/metadata/{next_season_number}/children"
-                response = requests.get(url, headers=headers)
-                response.raise_for_status()
-                episodes = ET.fromstring(response.content).findall(".//Video")
-                current_episode_number = 0
-              else:
-                return None
-          for episode in episodes:
-            ep_index = episode.get("index")
-            if ep_index is not None and int(ep_index) == int(current_episode_number)+1:
-                return episode.get("ratingKey")
-
-        logging.debug(f"No next episode found for {get_plex_file_name(current_episode_rating_key, plexserver, plextoken)}, possibly end of season or series")
-        return None
-
-    except requests.exceptions.RequestException as e:
-        logging.error(f"Error fetching data from Plex: {e}")
-        return None
-    except Exception as e:
-        logging.error(f"An unexpected error occurred: {e}")
-        return None
-
-def get_plex_file_name(itemid: str, server_ip: str, plex_token: str) -> str:
-    """Gets the full path to a file from the Plex server.
-    Args:
-        itemid: The ID of the item in the Plex library.
-        server_ip: The IP address of the Plex server.
-        plex_token: The Plex token.
-    Returns:
-        The full path to the file.
-    """
-
-    url = f"{server_ip}/library/metadata/{itemid}"
-
-    headers = {
-        "X-Plex-Token": plex_token,
-    }
-
-    response = requests.get(url, headers=headers)
-
-    if response.status_code == 200:
-        root = ET.fromstring(response.content)
-        part = root.find(".//Part")
-        if part is None:
-            raise Exception("No Part element found in Plex XML response")
-        fullpath = part.attrib['file']
-        return fullpath
-    else:
-        raise Exception(f"Error: {response.status_code}")
-
-def refresh_plex_metadata(itemid: str, server_ip: str, plex_token: str) -> None:
-    """
-    Refreshes the metadata of a Plex library item.
-    
-    Args:
-        itemid: The ID of the item in the Plex library whose metadata needs to be refreshed.
-        server_ip: The IP address of the Plex server.
-        plex_token: The Plex token used for authentication.
-        
-    Raises:
-        Exception: If the server does not respond with a successful status code.
-    """
-
-    # Plex API endpoint to refresh metadata for a specific item
-    url = f"{server_ip}/library/metadata/{itemid}/refresh"
-
-    # Headers to include the Plex token for authentication
-    headers = {
-        "X-Plex-Token": plex_token,
-    }
-
-    # Sending the PUT request to refresh metadata
-    response = requests.put(url, headers=headers)
-
-    # Check if the request was successful
-    if response.status_code == 200:
-        logging.info("Metadata refresh initiated successfully.")
-    else:
-        raise Exception(f"Error refreshing metadata: {response.status_code}")
-
-def refresh_jellyfin_metadata(itemid: str, server_ip: str, jellyfin_token: str) -> None:
-    """
-    Refreshes the metadata of a Jellyfin library item.
-    
-    Args:
-        itemid: The ID of the item in the Jellyfin library whose metadata needs to be refreshed.
-        server_ip: The IP address of the Jellyfin server.
-        jellyfin_token: The Jellyfin token used for authentication.
-        
-    Raises:
-        Exception: If the server does not respond with a successful status code.
-    """
-
-    # Jellyfin API endpoint to refresh metadata for a specific item
-    url = f"{server_ip}/Items/{itemid}/Refresh?MetadataRefreshMode=FullRefresh"
-
-    # Headers to include the Jellyfin token for authentication
-    headers = {
-        "Authorization": f"MediaBrowser Token={jellyfin_token}",
-    }
-
-    response = requests.post(url, headers=headers)
-
-    # Check if the request was successful
-    if response.status_code == 204:
-        logging.info("Metadata refresh queued successfully.")
-    else:
-        raise Exception(f"Error refreshing metadata: {response.status_code}")
-
-
-def get_jellyfin_file_name(item_id: str, jellyfin_url: str, jellyfin_token: str) -> str:
-    """Gets the full path to a file from the Jellyfin server.
-    Args:
-        jellyfin_url: The URL of the Jellyfin server.
-        jellyfin_token: The Jellyfin token.
-        item_id: The ID of the item in the Jellyfin library.
-    Returns:
-        The full path to the file.
-    """
-
-    headers = {
-        "Authorization": f"MediaBrowser Token={jellyfin_token}",
-    }
-
-    # Cheap way to get the admin user id, and save it for later use.
-    users = json.loads(requests.get(f"{jellyfin_url}/Users", headers=headers).content)
-    jellyfin_admin = get_jellyfin_admin(users)
-
-    response = requests.get(f"{jellyfin_url}/Users/{jellyfin_admin}/Items/{item_id}", headers=headers)
-
-    if response.status_code == 200:
-        file_name = json.loads(response.content)['Path']
-        return file_name
-    else:
-        raise Exception(f"Error: {response.status_code}")
-
-def get_jellyfin_admin(users):
-    for user in users:
-        if user["Policy"]["IsAdministrator"]:
-            return user["Id"]
-
-    raise Exception("Unable to find administrator user in Jellyfin")
 
 def has_audio(file_path):
     try:
