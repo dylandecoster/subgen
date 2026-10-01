@@ -169,53 +169,6 @@ The easiest way to run Subgen is via Docker. We maintain an image on Docker Hub 
 
 *(Launcher includes a wizard to help standalone users easily configure common variables).*
 
-### 3. Unraid
-While Unraid doesn't have an app or template for quick install, with minor manual work, you can easily install it. See [this discussion thread](https://github.com/McCloudS/subgen/discussions/137) for pictures and steps.
-
----
-
-## 🔌 Integrations & Webhooks Setup
-
-Choose your preferred integration below. **Do not enable multiple webhooks for the same media events** (e.g., don't use both Tautulli and Plex webhooks for "playback start"), or you will generate duplicate subtitles!
-
-### 🟠 Plex
-Requires Plex Pass. Plex and Subgen must have identical path configurations (or use Path Mapping).
-1. In Plex, go to **Settings > Webhooks**.
-2. Add a new webhook pointing to your Subgen instance: `http://<your-ip>:9000/plex`
-3. You will also need to generate a [Plex Token](https://support.plex.tv/articles/204059436-finding-an-authentication-token-x-plex-token/).
-4. **Relevant Variables:** `PLEX_SERVER`, `PLEX_TOKEN`.
-
-### 🔵 Jellyfin
-Jellyfin and Subgen must have identical path configurations (or use Path Mapping).
-1. Install the **Webhooks** plugin in Jellyfin.
-2. Click **Add Generic Destination**. 
-3. Name it whatever you like, and set the Webhook URL to: `http://<your-ip>:9000/jellyfin`
-4. Check **Item Added**, **Playback Start**, and **Send All Properties**.
-5. Click **Add Request Header**. Set Key: `Content-Type` and Value: `application/json`.
-6. **Relevant Variables:** `JELLYFIN_SERVER`, `JELLYFIN_TOKEN`.
-
-### 🟢 Emby
-Emby and Subgen must have identical path configurations (or use Path Mapping). Emby responses contain full info, so no API tokens are required!
-1. In Emby, create a webhook pointing to: `http://<your-ip>:9000/emby`
-2. Set **Request content type** to `multipart/form-data`.
-3. Configure your desired events (Usually `New Media Added`, `Start`, and `Unpause`).
-
-### 🟣 Tautulli
-Tautulli and Subgen must have identical path configurations (or use Path Mapping).
-Create two separate Webhooks in Tautulli pointing to `http://<your-ip>:9000/tautulli` using the **POST** method.
-
-**Webhook 1: Playback Start**
-*   **Trigger:** Playback Start
-*   **JSON Header:** `{"source": "Tautulli"}`
-*   **Data (JSON):** 
-    > `{"event": "played", "file": "{file}", "filename": "{filename}", "mediatype": "{media_type}"}`
-
-**Webhook 2: Recently Added**
-*   **Trigger:** Recently Added
-*   **JSON Header:** `{"source": "Tautulli"}`
-*   **Data (JSON):** 
-    > `{"event": "added", "file": "{file}", "filename": "{filename}", "mediatype": "{media_type}"}`
-
 ---
 
 ## ⚙️ Configuration (Environment Variables)
@@ -303,15 +256,6 @@ touch "/tv/Some Show/Season 1/.subgen_skip"  # skips just that season
 | `PATH_MAPPING_FROM` | `/tv` | Example: The media path on Plex. |
 | `PATH_MAPPING_TO` | `/Volumes/TV` | Example: What Subgen natively sees that same path as. |
 | `MODEL_PATH` | `./models` | Path where AI models are downloaded and stored. |
-
-### 🎬 Media Server Integration (Metadata Refreshing)
-*Required if you want Subgen to automatically generate Subtitles off of Webhook Events from Plex or Jellyfin or to tell Plex or Jellyfin to refresh the show's metadata so the subtitle immediately appears after generation.*
-| Variable | Default | Description |
-|---|---|---|
-| `PLEX_SERVER` | *(None)* | Local Plex address (e.g., `http://192.168.1.100:32400`). |
-| `PLEX_TOKEN` | *(None)* | Your Plex Token for API access. |
-| `JELLYFIN_SERVER` | *(None)* | Local Jellyfin address (e.g., `http://192.168.1.100:8096`). |
-| `JELLYFIN_TOKEN` | *(None)* | Generated API token from Jellyfin UI. |
 
 ---
 
