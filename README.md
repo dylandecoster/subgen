@@ -101,7 +101,7 @@ This potentially has the ability to use CUDA/Nvidia GPU's, but I don't have one 
 ## 🎬 What is this?
 Subgen transcribes your personal media to create subtitles (`.srt` or `.lrc`) from audio/video files. It can transcribe non-English languages to themselves, or translate foreign languages into English. 
 
-It is designed to integrate perfectly with **Bazarr** (as a Whisper Provider), or run via webhooks triggered directly by your **Plex, Emby, Jellyfin, or Tautulli** servers whenever media is added or played. Under the hood, it uses `stable-ts` and `faster-whisper`, fully supporting both CPU and Nvidia GPU (CUDA) transcoding.
+It is designed to integrate perfectly with **Bazarr** (as a Whisper Provider), fully supporting both CPU and Nvidia GPU (CUDA) transcoding.
 
 ## 🤔 Why?
 Some shows just won't have subtitles available, or embedded H265 subtitles might be wildly out of sync. This gap-fills everything else by generating highly accurate subtitles locally on your own hardware. 
@@ -197,10 +197,7 @@ The easiest way to run Subgen is via Docker. We maintain an image on Docker Hub 
 | `TRANSCRIBE_FOLDERS` | `''` | Pipe-separated list (e.g., `/tv&#124;/movies`) to recurse through and queue existing media. |
 | `MONITOR` | `False` | Actively watches `TRANSCRIBE_FOLDERS` in real-time for newly pasted files. |
 | `SKIP_STARTUP_SCAN` | `False` | Skips the startup scan of `TRANSCRIBE_FOLDERS` entirely. Subgen will still watch for new files if `MONITOR` is enabled, but won't iterate existing files on start. Useful if your library is already subtitled and you only want to catch newly added files. |
-| `PLEX_QUEUE_NEXT_EPISODE` | `False` | Auto-queues the *next* Plex episode when Subgen is triggered. |
-| `PLEX_QUEUE_SEASON` | `False` | Auto-queues the *entire remaining season* when Subgen is triggered. |
-| `PLEX_QUEUE_SERIES` | `False` | Auto-queues the *entire remaining series* when Subgen is triggered. |
-| `WEBHOOK_URL_COMPLETED` | `''` | Sends a POST to the `WEBHOOK_URL_COMPLETED` URL with a JSON containing: <br><code>{<br>&nbsp;&nbsp;"event": "transcribed",<br>&nbsp;&nbsp;"file": "/absolute/path/to/video.mkv",<br>&nbsp;&nbsp;"subtitle": "/absolute/path/to/video.en.srt",<br>&nbsp;&nbsp;"language": "en"<br>}</code><br>It will not fire on skips, `/asr` or `/detect-language`. |
+<br>&nbsp;&nbsp;"subtitle": "/absolute/path/to/video.en.srt",<br>&nbsp;&nbsp;"language": "en"<br>}</code><br>It will not fire on skips, `/asr` or `/detect-language`. |
 
 ### ⏭️ Skip Logic & Audio Targeting
 *Prevent Subgen from wasting time on files that don't need subtitles.*
